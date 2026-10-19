@@ -306,12 +306,20 @@ if ($isLocked && $_SERVER['REQUEST_METHOD'] !== 'GET') {
                 "    ]\n" .
                 "];\n";
 
-            @file_put_contents($configFile, $configContent, LOCK_EX);
+            $written = @file_put_contents($configFile, $configContent, LOCK_EX);
+            if (is_dir(__DIR__ . '/data')) {
+                @file_put_contents(__DIR__ . '/data/config.php', $configContent, LOCK_EX);
+            }
             @file_put_contents($lockFile, "installed on " . date('c'), LOCK_EX);
 
-            $msg = 'MySQL 5.6 数据库安装成功！所有数据表与管理员配置已完成，正在跳转至前台首页...';
-            $msgType = 'success';
-            header("refresh:2;url=index.php");
+            if (!$written) {
+                $msg = 'MySQL 数据表创建成功，但无法自动写入根目录 config.php。请检查网站根目录写入权限（建议设置为 755 或 777），或手动创建 config.php 粘贴配置。';
+                $msgType = 'error';
+            } else {
+                $msg = 'MySQL 5.6 数据库安装成功！所有数据表与管理员配置已完成，正在跳转至前台首页...';
+                $msgType = 'success';
+                header("refresh:2;url=index.php");
+            }
         } catch (PDOException $e) {
             $msg = '数据库连接或建表失败: ' . htmlspecialchars($e->getMessage());
             $msgType = 'error';

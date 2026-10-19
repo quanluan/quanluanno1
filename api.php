@@ -1,7 +1,7 @@
 <?php
 /**
  * 极光VIP专属导航 - PHP 7.4+ 后端 API 接口引擎
- * 数据库支持: MySQL 5.6+ (基于 PDO 预处理防 SQL 注入)
+ * 数据库支持: MySQL 5.6+ (基于 PDO 预处理，彻底防范 SQL 注入)
  */
 
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
@@ -10,21 +10,22 @@ ini_set('display_errors', '0');
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-HTTP-Method-Override');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
-$configFile = __DIR__ . '/config.php';
+$configFile = file_exists(__DIR__ . '/config.php') ? __DIR__ . '/config.php' : __DIR__ . '/data/config.php';
 $hasMySql = false;
 $pdo = null;
 $p = 'nav_';
+$dbErr = '';
 
 if (file_exists($configFile)) {
     $cfg = @include($configFile);
-    if (is_array($cfg) && !empty($cfg['db']) && ($cfg['db']['type'] ?? '') === 'mysql') {
+    if (is_array($cfg) && !empty($cfg['db'])) {
         $db = $cfg['db'];
         $p = $db['prefix'] ?? 'nav_';
         try {
@@ -41,11 +42,12 @@ if (file_exists($configFile)) {
             $hasMySql = true;
         } catch (Exception $e) {
             $hasMySql = false;
+            $dbErr = $e->getMessage();
         }
     }
 }
 
-// ---------------- 辅助安全函数 ----------------
+// 辅助安全哈希
 function hashPassword($password, $salt) {
     return hash_pbkdf2("sha256", $password, $salt, 1000, 128);
 }
@@ -65,7 +67,17 @@ if (!is_array($body)) {
     $body = [];
 }
 
-// 提取当前路由
+// 提取当前请求方式（支持 X-HTTP-Method-Override 突破部分主机对 PUT/DELETE 的拦截）
+$method = strtoupper($_SERVER['REQUEST_METHOD']);
+if (isset($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'])) {
+    $method = strtoupper($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE']);
+} elseif (isset($_GET['_method'])) {
+    $method = strtoupper($_GET['_method']);
+} elseif (isset($body['_method'])) {
+    $method = strtoupper($body['_method']);
+}
+
+// 提取请求路由
 $route = '';
 if (isset($_GET['route']) && !empty($_GET['route'])) {
     $route = '/' . ltrim($_GET['route'], '/');
@@ -82,28 +94,27 @@ if (isset($_GET['route']) && !empty($_GET['route'])) {
 $route = '/' . trim($route, '/');
 if ($route === '/') $route = '';
 
-$method = strtoupper($_SERVER['REQUEST_METHOD']);
-
-// 检查是否尚未安装
+// 未安装或连接失败处理
 if (!$hasMySql) {
     if ($route === '/system/settings' && $method === 'GET') {
         echo json_encode([
             'installed' => false,
             'siteName' => '极光VIP精选资源导航',
             'siteSlogan' => '系统等待初始化安装配置',
-            'message' => '请先访问 /install.php 配置数据库进行安装'
+            'requireInstall' => true,
+            'error' => $dbErr ?: '未检测到数据库配置，请访问 install.php 完成安装'
         ], JSON_UNESCAPED_UNICODE);
         exit;
     }
     http_response_code(500);
     echo json_encode([
-        'error' => 'MySQL 数据库尚未连接或安装，请先访问 install.php 页面进行配置安装',
+        'error' => 'MySQL 数据库未连接或尚未安装。' . ($dbErr ? " 错误: {$dbErr}" : ' 请访问 install.php 进行配置。'),
         'requireInstall' => true
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// 提取并验证当前 Token
+// 提取并校验当前登录 Token
 $token = '';
 $authHeader = '';
 if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
@@ -160,15 +171,12 @@ if ($isAdmin) {
     }
 }
 
-// ---------------- 业务接口分发 (全部使用预处理语句防注入) ----------------
+// ---------------- 接口路由分发 (全部使用 PDO 参数化绑定防 SQL 注入) ----------------
 
-// 1. 获取全局设置
+// 1. 系统设置 (GET /system/settings)
 if ($route === '/system/settings' && $method === 'GET') {
     $stmt = $pdo->query("SELECT * FROM `{$p}settings` LIMIT 1");
-    $s = $stmt->fetch();
-    if (!$s) {
-        $s = [];
-    }
+    $s = $stmt->fetch() ?: [];
     echo json_encode([
         'installed' => true,
         'siteName' => $s['site_name'] ?? '极光VIP精选资源导航',
@@ -189,7 +197,7 @@ if ($route === '/system/settings' && $method === 'GET') {
     exit;
 }
 
-// 2. 当前用户
+// 2. 当前用户 (GET /auth/me)
 if ($route === '/auth/me' && $method === 'GET') {
     if ($currentUser) {
         echo json_encode([
@@ -202,7 +210,7 @@ if ($route === '/auth/me' && $method === 'GET') {
     exit;
 }
 
-// 3. 用户登录
+// 3. 用户登录 (POST /auth/login)
 if ($route === '/auth/login' && $method === 'POST') {
     $username = strtolower(trim($body['username'] ?? ''));
     $password = (string)($body['password'] ?? '');
@@ -243,7 +251,7 @@ if ($route === '/auth/login' && $method === 'POST') {
     exit;
 }
 
-// 4. 用户注册 (强制有效卡密激活)
+// 4. 卡密激活注册 (POST /auth/register)
 if ($route === '/auth/register' && $method === 'POST') {
     $username = trim($body['username'] ?? '');
     $password = (string)($body['password'] ?? '');
@@ -255,31 +263,27 @@ if ($route === '/auth/register' && $method === 'POST') {
         echo json_encode(['error' => '请填写完整用户名、密码及卡密激活码'], JSON_UNESCAPED_UNICODE);
         exit;
     }
-
     if (strlen($password) < 6) {
         http_response_code(400);
         echo json_encode(['error' => '密码长度不能少于 6 位'], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
-    // 查询卡密
     $stmtCode = $pdo->prepare("SELECT * FROM `{$p}invite_codes` WHERE code = ? LIMIT 1");
     $stmtCode->execute([$inviteCode]);
     $codeRecord = $stmtCode->fetch();
 
     if (!$codeRecord) {
         http_response_code(400);
-        echo json_encode(['error' => '无效的卡密激活码，请核实后重新输入'], JSON_UNESCAPED_UNICODE);
+        echo json_encode(['error' => '无效的卡密激活码，请核实后重试'], JSON_UNESCAPED_UNICODE);
         exit;
     }
-
     if ($codeRecord['status'] !== 'unused') {
         http_response_code(400);
         echo json_encode(['error' => '该卡密已被使用，请获取新卡密'], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
-    // 检查用户名冲突
     $stmtCheck = $pdo->prepare("SELECT id FROM `{$p}users` WHERE LOWER(username) = ? LIMIT 1");
     $stmtCheck->execute([strtolower($username)]);
     if ($stmtCheck->fetch()) {
@@ -291,7 +295,6 @@ if ($route === '/auth/register' && $method === 'POST') {
     $now = time() * 1000;
     $vipDays = intval($codeRecord['vip_days']);
     $expireAt = ($vipDays >= 9999) ? null : ($now + $vipDays * 86400 * 1000);
-
     $salt = generateSalt();
     $hash = hashPassword($password, $salt);
     $newUserId = 'usr-' . substr(uniqid(), 5);
@@ -317,24 +320,23 @@ if ($route === '/auth/register' && $method === 'POST') {
 
         $stmtGet = $pdo->prepare("SELECT * FROM `{$p}users` WHERE id = ?");
         $stmtGet->execute([$newUserId]);
-        $createdUser = $stmtGet->fetch();
 
         echo json_encode([
             'success' => true,
             'token' => $newToken,
-            'user' => formatUser($createdUser),
+            'user' => formatUser($stmtGet->fetch()),
             'message' => '注册成功，已激活 ' . $codeRecord['vip_tier_name']
         ], JSON_UNESCAPED_UNICODE);
         exit;
     } catch (Exception $e) {
         $pdo->rollBack();
         http_response_code(500);
-        echo json_encode(['error' => '注册创建失败: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        echo json_encode(['error' => '注册失败: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
         exit;
     }
 }
 
-// 5. 退出登录
+// 5. 退出登录 (POST /auth/logout)
 if ($route === '/auth/logout' && $method === 'POST') {
     if ($token) {
         $stmt = $pdo->prepare("DELETE FROM `{$p}sessions` WHERE token = ?");
@@ -344,14 +346,69 @@ if ($route === '/auth/logout' && $method === 'POST') {
     exit;
 }
 
-// 6. 分类列表
-if ($route === '/categories' && $method === 'GET') {
+// 6. 分类列表 (GET /categories)
+if (($route === '/categories' || $route === '/admin/categories') && $method === 'GET') {
     $stmt = $pdo->query("SELECT id, name, icon, description, sort_order AS sortOrder FROM `{$p}categories` ORDER BY sort_order ASC");
     echo json_encode($stmt->fetchAll(), JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// 7. 站点目录列表 (带防盗链遮蔽)
+// 7. 新增分类 (POST /admin/categories)
+if ($route === '/admin/categories' && $method === 'POST') {
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
+    $name = trim($body['name'] ?? '');
+    if (!$name) {
+        http_response_code(400);
+        echo json_encode(['error' => '分类名称不能为空']);
+        exit;
+    }
+    $id = 'cat-' . uniqid();
+    $icon = trim($body['icon'] ?? 'Folder');
+    $desc = trim($body['description'] ?? '');
+    $sortOrder = intval($body['sortOrder'] ?? ($body['sort_order'] ?? 1));
+
+    $stmt = $pdo->prepare("INSERT INTO `{$p}categories` (id, name, icon, description, sort_order) VALUES (?, ?, ?, ?, ?)");
+    $stmt->execute([$id, $name, $icon, $desc, $sortOrder]);
+
+    echo json_encode([
+        'success' => true,
+        'category' => ['id' => $id, 'name' => $name, 'icon' => $icon, 'description' => $desc, 'sortOrder' => $sortOrder]
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// 8. 修改分类 (PUT /admin/categories/:id)
+if (strpos($route, '/admin/categories/') === 0 && $method === 'PUT') {
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
+    $id = substr($route, strlen('/admin/categories/'));
+    $fields = [];
+    $params = [];
+    if (isset($body['name'])) { $fields[] = 'name = ?'; $params[] = trim($body['name']); }
+    if (isset($body['icon'])) { $fields[] = 'icon = ?'; $params[] = trim($body['icon']); }
+    if (isset($body['description'])) { $fields[] = 'description = ?'; $params[] = trim($body['description']); }
+    if (isset($body['sortOrder'])) { $fields[] = 'sort_order = ?'; $params[] = intval($body['sortOrder']); }
+    elseif (isset($body['sort_order'])) { $fields[] = 'sort_order = ?'; $params[] = intval($body['sort_order']); }
+
+    if (!empty($fields)) {
+        $params[] = $id;
+        $stmt = $pdo->prepare("UPDATE `{$p}categories` SET " . implode(', ', $fields) . " WHERE id = ?");
+        $stmt->execute($params);
+    }
+    echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// 9. 删除分类 (DELETE /admin/categories/:id)
+if (strpos($route, '/admin/categories/') === 0 && $method === 'DELETE') {
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
+    $id = substr($route, strlen('/admin/categories/'));
+    $stmt = $pdo->prepare("DELETE FROM `{$p}categories` WHERE id = ?");
+    $stmt->execute([$id]);
+    echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// 10. 站点目录列表 (GET /sites)
 if ($route === '/sites' && $method === 'GET') {
     $stmtSettings = $pdo->query("SELECT force_login_to_view_url FROM `{$p}settings` LIMIT 1");
     $set = $stmtSettings->fetch();
@@ -401,12 +458,11 @@ if ($route === '/sites' && $method === 'GET') {
             'lockReason' => $lockReason
         ];
     }
-
     echo json_encode($res, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// 8. 站点点击直达统计与鉴权
+// 11. 站点点击直达统计 (POST /sites/click/:id)
 if (strpos($route, '/sites/click/') === 0 && $method === 'POST') {
     $id = substr($route, strlen('/sites/click/'));
     $stmt = $pdo->prepare("SELECT * FROM `{$p}sites` WHERE id = ? LIMIT 1");
@@ -425,35 +481,25 @@ if (strpos($route, '/sites/click/') === 0 && $method === 'POST') {
 
     if ($forceLogin && !$currentUser) {
         http_response_code(403);
-        echo json_encode([
-            'error' => '请先登录以访问此收录站点',
-            'requireLogin' => true
-        ], JSON_UNESCAPED_UNICODE);
+        echo json_encode(['error' => '请先登录以访问此收录站点', 'requireLogin' => true], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
     $minVip = $site['min_vip_tier'] ?? 'all';
     if ($minVip !== 'all' && !$isVip) {
         http_response_code(403);
-        echo json_encode([
-            'error' => '该站点为VIP会员专属，请开通对应权限',
-            'requireVip' => true
-        ], JSON_UNESCAPED_UNICODE);
+        echo json_encode(['error' => '该站点为VIP会员专属，请开通对应权限', 'requireVip' => true], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
     $stmtUpdate = $pdo->prepare("UPDATE `{$p}sites` SET click_count = click_count + 1 WHERE id = ?");
     $stmtUpdate->execute([$id]);
 
-    echo json_encode([
-        'success' => true,
-        'url' => $site['url'],
-        'title' => $site['title']
-    ], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['success' => true, 'url' => $site['url'], 'title' => $site['title']], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// 9. 提交收录
+// 12. 前台提交收录 (POST /sites/submit)
 if ($route === '/sites/submit' && $method === 'POST') {
     $title = trim($body['title'] ?? '');
     $url = trim($body['url'] ?? '');
@@ -487,25 +533,20 @@ if ($route === '/sites/submit' && $method === 'POST') {
         'success' => true,
         'message' => $autoApprove ? '收录成功，已同步展示' : '提交成功，已进入管理员审核队列',
         'site' => [
-            'id' => $id,
-            'title' => $title,
-            'url' => $url,
-            'description' => $desc,
-            'categoryId' => $catId,
-            'status' => $status
+            'id' => $id, 'title' => $title, 'url' => $url, 'description' => $desc, 'categoryId' => $catId, 'status' => $status
         ]
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// 10. 广告列表
+// 13. 广告列表 (GET /ads)
 if ($route === '/ads' && $method === 'GET') {
     $stmt = $pdo->query("SELECT id, title, position, image_url AS imageUrl, target_url AS targetUrl, badge_text AS badgeText, description, is_active AS isActive, click_count AS clickCount, sort_order AS sortOrder, created_at AS createdAt FROM `{$p}ads` WHERE is_active = 1 ORDER BY sort_order ASC");
     echo json_encode($stmt->fetchAll(), JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// 11. 广告点击统计
+// 14. 广告点击统计 (POST /ads/click/:id)
 if (strpos($route, '/ads/click/') === 0 && $method === 'POST') {
     $id = substr($route, strlen('/ads/click/'));
     $stmt = $pdo->prepare("UPDATE `{$p}ads` SET click_count = click_count + 1 WHERE id = ?");
@@ -514,9 +555,9 @@ if (strpos($route, '/ads/click/') === 0 && $method === 'POST') {
     exit;
 }
 
-// 12. 后台统计
+// 15. 管理员统计数据 (GET /admin/stats)
 if ($route === '/admin/stats' && $method === 'GET') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
 
     $totalUsers = $pdo->query("SELECT COUNT(*) FROM `{$p}users`")->fetchColumn();
     $now = time() * 1000;
@@ -544,9 +585,9 @@ if ($route === '/admin/stats' && $method === 'GET') {
     exit;
 }
 
-// 13. 管理员收录 CRUD
+// 16. 管理员收录 CRUD
 if ($route === '/admin/sites' && $method === 'GET') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $stmt = $pdo->query("SELECT * FROM `{$p}sites` ORDER BY is_pinned DESC, id DESC");
     $rows = $stmt->fetchAll();
     $sites = [];
@@ -576,7 +617,7 @@ if ($route === '/admin/sites' && $method === 'GET') {
 }
 
 if ($route === '/admin/sites' && $method === 'POST') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $id = 'site-' . uniqid();
     $tagsJson = json_encode(is_array($body['tags'] ?? null) ? $body['tags'] : [], JSON_UNESCAPED_UNICODE);
     $stmt = $pdo->prepare("INSERT INTO `{$p}sites` (
@@ -597,12 +638,12 @@ if ($route === '/admin/sites' && $method === 'POST') {
         $currentUser['id'],
         $currentUser['nickname'] ?: $currentUser['username']
     ]);
-    echo json_encode(['success' => true, 'id' => $id], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['success' => true, 'id' => $id, 'site' => array_merge($body, ['id' => $id])], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if (strpos($route, '/admin/sites/') === 0) {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $id = substr($route, strlen('/admin/sites/'));
     if ($method === 'PUT') {
         $fields = [];
@@ -623,8 +664,7 @@ if (strpos($route, '/admin/sites/') === 0) {
 
         if (!empty($fields)) {
             $params[] = $id;
-            $sql = "UPDATE `{$p}sites` SET " . implode(', ', $fields) . " WHERE id = ?";
-            $stmt = $pdo->prepare($sql);
+            $stmt = $pdo->prepare("UPDATE `{$p}sites` SET " . implode(', ', $fields) . " WHERE id = ?");
             $stmt->execute($params);
         }
         echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
@@ -637,16 +677,16 @@ if (strpos($route, '/admin/sites/') === 0) {
     }
 }
 
-// 14. 管理员卡密生成与管理
+// 17. 管理员卡密管理 (GET /admin/invite-codes, POST /generate, PUT, DELETE)
 if ($route === '/admin/invite-codes' && $method === 'GET') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $stmt = $pdo->query("SELECT id, code, vip_days AS vipDays, vip_tier AS vipTier, vip_tier_name AS vipTierName, status, used_by_user_id AS usedByUserId, used_by_username AS usedByUsername, used_at AS usedAt, remark, created_at AS createdAt FROM `{$p}invite_codes` ORDER BY id DESC");
     echo json_encode($stmt->fetchAll(), JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if ($route === '/admin/invite-codes/generate' && $method === 'POST') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $count = max(1, min(100, intval($body['count'] ?? 1)));
     $prefix = strtoupper(trim($body['prefix'] ?? 'VIP'));
     $vipDays = intval($body['vipDays'] ?? 30);
@@ -679,18 +719,32 @@ if ($route === '/admin/invite-codes/generate' && $method === 'POST') {
     exit;
 }
 
-if (strpos($route, '/admin/invite-codes/') === 0 && $method === 'DELETE') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+if (strpos($route, '/admin/invite-codes/') === 0) {
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $id = substr($route, strlen('/admin/invite-codes/'));
-    $stmt = $pdo->prepare("DELETE FROM `{$p}invite_codes` WHERE id = ?");
-    $stmt->execute([$id]);
-    echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
-    exit;
+    if ($method === 'DELETE') {
+        $stmt = $pdo->prepare("DELETE FROM `{$p}invite_codes` WHERE id = ?");
+        $stmt->execute([$id]);
+        echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    } elseif ($method === 'PUT') {
+        $fields = [];
+        $params = [];
+        if (isset($body['status'])) { $fields[] = 'status = ?'; $params[] = $body['status']; }
+        if (isset($body['remark'])) { $fields[] = 'remark = ?'; $params[] = trim($body['remark']); }
+        if (!empty($fields)) {
+            $params[] = $id;
+            $stmt = $pdo->prepare("UPDATE `{$p}invite_codes` SET " . implode(', ', $fields) . " WHERE id = ?");
+            $stmt->execute($params);
+        }
+        echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 }
 
-// 15. 用户与权限调配
+// 18. 用户管理 (GET, PUT, DELETE)
 if ($route === '/admin/users' && $method === 'GET') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $stmt = $pdo->query("SELECT * FROM `{$p}users` ORDER BY created_at DESC");
     $users = array_map('formatUser', $stmt->fetchAll());
     echo json_encode($users, JSON_UNESCAPED_UNICODE);
@@ -698,7 +752,7 @@ if ($route === '/admin/users' && $method === 'GET') {
 }
 
 if (strpos($route, '/admin/users/') === 0) {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $id = substr($route, strlen('/admin/users/'));
 
     if ($method === 'PUT') {
@@ -765,41 +819,16 @@ if (strpos($route, '/admin/users/') === 0) {
     }
 }
 
-// 16. 分类管理 CRUD
-if ($route === '/admin/categories' && $method === 'POST') {
-    if (!$isAdmin) { http_response_code(403); exit; }
-    $id = 'cat-' . uniqid();
-    $stmt = $pdo->prepare("INSERT INTO `{$p}categories` (id, name, icon, description, sort_order) VALUES (?, ?, ?, ?, ?)");
-    $stmt->execute([
-        $id,
-        trim($body['name'] ?? ''),
-        trim($body['icon'] ?? 'Folder'),
-        trim($body['description'] ?? ''),
-        intval($body['sortOrder'] ?? 1)
-    ]);
-    echo json_encode(['success' => true, 'id' => $id], JSON_UNESCAPED_UNICODE);
-    exit;
-}
-
-if (strpos($route, '/admin/categories/') === 0 && $method === 'DELETE') {
-    if (!$isAdmin) { http_response_code(403); exit; }
-    $id = substr($route, strlen('/admin/categories/'));
-    $stmt = $pdo->prepare("DELETE FROM `{$p}categories` WHERE id = ?");
-    $stmt->execute([$id]);
-    echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
-    exit;
-}
-
-// 17. 广告展位管理 CRUD
+// 19. 广告管理 CRUD
 if ($route === '/admin/ads' && $method === 'GET') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $stmt = $pdo->query("SELECT id, title, position, image_url AS imageUrl, target_url AS targetUrl, badge_text AS badgeText, description, is_active AS isActive, click_count AS clickCount, sort_order AS sortOrder, created_at AS createdAt FROM `{$p}ads` ORDER BY sort_order ASC, id DESC");
     echo json_encode($stmt->fetchAll(), JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if ($route === '/admin/ads' && $method === 'POST') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $id = 'ad-' . uniqid();
     $stmt = $pdo->prepare("INSERT INTO `{$p}ads` (id, title, position, image_url, target_url, badge_text, description, is_active, click_count, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NOW())");
     $stmt->execute([
@@ -813,22 +842,43 @@ if ($route === '/admin/ads' && $method === 'POST') {
         !empty($body['isActive']) ? 1 : 0,
         intval($body['sortOrder'] ?? 1)
     ]);
-    echo json_encode(['success' => true, 'id' => $id], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['success' => true, 'id' => $id, 'ad' => array_merge($body, ['id' => $id])], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-if (strpos($route, '/admin/ads/') === 0 && $method === 'DELETE') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+if (strpos($route, '/admin/ads/') === 0) {
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     $id = substr($route, strlen('/admin/ads/'));
-    $stmt = $pdo->prepare("DELETE FROM `{$p}ads` WHERE id = ?");
-    $stmt->execute([$id]);
-    echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
-    exit;
+    if ($method === 'PUT') {
+        $fields = [];
+        $params = [];
+        if (isset($body['title'])) { $fields[] = 'title = ?'; $params[] = trim($body['title']); }
+        if (isset($body['position'])) { $fields[] = 'position = ?'; $params[] = trim($body['position']); }
+        if (isset($body['imageUrl'])) { $fields[] = 'image_url = ?'; $params[] = trim($body['imageUrl']); }
+        if (isset($body['targetUrl'])) { $fields[] = 'target_url = ?'; $params[] = trim($body['targetUrl']); }
+        if (isset($body['badgeText'])) { $fields[] = 'badge_text = ?'; $params[] = trim($body['badgeText']); }
+        if (isset($body['description'])) { $fields[] = 'description = ?'; $params[] = trim($body['description']); }
+        if (isset($body['isActive'])) { $fields[] = 'is_active = ?'; $params[] = !empty($body['isActive']) ? 1 : 0; }
+        if (isset($body['sortOrder'])) { $fields[] = 'sort_order = ?'; $params[] = intval($body['sortOrder']); }
+
+        if (!empty($fields)) {
+            $params[] = $id;
+            $stmt = $pdo->prepare("UPDATE `{$p}ads` SET " . implode(', ', $fields) . " WHERE id = ?");
+            $stmt->execute($params);
+        }
+        echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    } elseif ($method === 'DELETE') {
+        $stmt = $pdo->prepare("DELETE FROM `{$p}ads` WHERE id = ?");
+        $stmt->execute([$id]);
+        echo json_encode(['success' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 }
 
-// 18. 系统配置修改 (包含 logoUrl)
+// 20. 系统配置管理 (GET, PUT - 包含 logoUrl)
 if ($route === '/admin/settings') {
-    if (!$isAdmin) { http_response_code(403); exit; }
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     if ($method === 'GET') {
         $stmt = $pdo->query("SELECT * FROM `{$p}settings` LIMIT 1");
         $s = $stmt->fetch() ?: [];
