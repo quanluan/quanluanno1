@@ -2,6 +2,10 @@
   RewriteEngine On
   RewriteBase /
 
+  # Pass Authorization header to PHP in FastCGI / PHP-FPM
+  SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
   # Route /api/* to PHP 7.4 API backend
   RewriteRule ^api/(.*)$ api.php?route=$1 [QSA,L]
 

@@ -21,7 +21,7 @@ declare global {
   }
 }
 
-// 智能网络请求：优先直连 PHP 7.4 / MySQL 后端 (兼容 rewrite 与无 rewrite 虚拟主机环境)
+// 智能全动态网络请求：优先直连 PHP 7.4 / MySQL 后端 (兼容任意虚拟主机与反向代理环境)
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   const method = (options.method || 'GET').toUpperCase();
@@ -34,27 +34,28 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
+    headers['X-Auth-Token'] = token;
   }
 
   const cleanRoute = endpoint.startsWith('/api') ? endpoint.substring(4) : endpoint;
 
-  // 候选请求地址列表
-  const candidateUrls: string[] = [];
-
-  // 1. 如果在 PHP 虚拟主机页面，优先通过 api.php?route= 直达（物理文件，100%绕过主机伪静态缺失问题）
+  // 判断是否处于真实线上 PHP 虚拟主机环境
   const isPhpHost = typeof window !== 'undefined' && (
     window.__PHP_HOST_ACTIVE__ ||
-    window.location.protocol.startsWith('http') && window.location.port !== '3000'
+    (window.location.protocol.startsWith('http') && window.location.port !== '3000')
   );
 
+  const candidateUrls: string[] = [];
   if (isPhpHost) {
     const apiBase = (typeof window !== 'undefined' && window.__PHP_API_BASE__) || 'api.php?route=';
-    candidateUrls.push(`${apiBase}${cleanRoute}`);
-    candidateUrls.push(endpoint); // 备选 /api/ 伪静态
+    const separator = apiBase.includes('?') ? '&' : '?';
+    const tokenQuery = token ? `${separator}token=${encodeURIComponent(token)}` : '';
+    candidateUrls.push(`${apiBase}${cleanRoute}${tokenQuery}`);
+    candidateUrls.push(`${endpoint}${token ? `?token=${encodeURIComponent(token)}` : ''}`);
   } else {
-    // 开发环境（Node.js / Vite 代理在 3000 端口）
+    // 本地开发环境 (Node.js / Express 3000 端口)
     candidateUrls.push(endpoint);
-    candidateUrls.push(`api.php?route=${cleanRoute}`);
+    candidateUrls.push(`api.php?route=${cleanRoute}${token ? `&token=${encodeURIComponent(token)}` : ''}`);
   }
 
   let lastError: Error | null = null;
@@ -68,7 +69,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
         const data = await res.json().catch(() => null);
 
         if (!res.ok) {
-          const errMsg = data?.error || `服务器请求失败 (HTTP ${res.status})`;
+          const errMsg = data?.error || `服务器处理失败 (HTTP ${res.status})`;
           throw new Error(errMsg);
         }
 
@@ -77,7 +78,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
         }
       }
 
-      // 如果返回 404 且不是 JSON（说明该虚拟主机未开启该 URL 的伪静态），尝试下一个备选地址
+      // 如果返回 404 且不是 JSON（说明该虚拟主机未配置该 URL 的伪静态），尝试下一个备选地址
       if (res.status === 404) {
         continue;
       }
@@ -88,7 +89,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     } catch (err: unknown) {
       if (err instanceof Error) {
         lastError = err;
-        // 如果是后端的明确业务报错（如密码错误、权限不足、数据库错误），立即抛出给前端 UI 展示
+        // 如果是后端的明确业务报错（如密码错误、权限不足、卡密已使用、数据库错误），立即抛出给前端 UI 展示
         if (!err.message.includes('Failed to fetch') && !err.message.includes('NetworkError')) {
           throw err;
         }
@@ -96,7 +97,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     }
   }
 
-  throw lastError || new Error('无法连接后端 API 服务，请确认已上传 api.php 并完成数据库安装');
+  throw lastError || new Error('无法连接后端 API 数据库服务，请确认已上传 api.php 并完成数据库安装');
 }
 
 export const api = {

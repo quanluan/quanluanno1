@@ -1,7 +1,7 @@
 <?php
 /**
- * 极光VIP专属导航 - PHP 7.4+ 后端 API 接口引擎
- * 数据库支持: MySQL 5.6+ (基于 PDO 预处理，彻底防范 SQL 注入)
+ * 极光VIP专属导航 - PHP 7.4+ 全动态后端 API 引擎
+ * 数据库支持: MySQL 5.6+ (全量 PDO 参数化预处理，彻底防范 SQL 注入)
  */
 
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
@@ -10,13 +10,14 @@ ini_set('display_errors', '0');
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-HTTP-Method-Override');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-HTTP-Method-Override, X-Auth-Token');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
+// 检查数据库配置文件 (根目录或 data 目录)
 $configFile = file_exists(__DIR__ . '/config.php') ? __DIR__ . '/config.php' : __DIR__ . '/data/config.php';
 $hasMySql = false;
 $pdo = null;
@@ -47,7 +48,7 @@ if (file_exists($configFile)) {
     }
 }
 
-// 辅助安全哈希
+// 密码散列与令牌
 function hashPassword($password, $salt) {
     return hash_pbkdf2("sha256", $password, $salt, 1000, 128);
 }
@@ -67,7 +68,7 @@ if (!is_array($body)) {
     $body = [];
 }
 
-// 提取当前请求方式（支持 X-HTTP-Method-Override 突破部分主机对 PUT/DELETE 的拦截）
+// 提取当前请求方式 (突破部分主机对 PUT/DELETE 拦截)
 $method = strtoupper($_SERVER['REQUEST_METHOD']);
 if (isset($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'])) {
     $method = strtoupper($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE']);
@@ -102,7 +103,7 @@ if (!$hasMySql) {
             'siteName' => '极光VIP精选资源导航',
             'siteSlogan' => '系统等待初始化安装配置',
             'requireInstall' => true,
-            'error' => $dbErr ?: '未检测到数据库配置，请访问 install.php 完成安装'
+            'error' => $dbErr ?: '未检测到数据库配置，请先访问 install.php 完成安装'
         ], JSON_UNESCAPED_UNICODE);
         exit;
     }
@@ -114,23 +115,29 @@ if (!$hasMySql) {
     exit;
 }
 
-// 提取并校验当前登录 Token
+// 多渠道提取并校验 Token (防 Apache/Nginx FastCGI 剥离 Authorization 头部)
 $token = '';
-$authHeader = '';
-if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'];
+if (!empty($_SERVER['HTTP_AUTHORIZATION']) && preg_match('/Bearer\s+(.*)$/i', $_SERVER['HTTP_AUTHORIZATION'], $m)) {
+    $token = trim($m[1]);
+} elseif (!empty($_SERVER['HTTP_X_AUTH_TOKEN'])) {
+    $token = trim($_SERVER['HTTP_X_AUTH_TOKEN']);
+} elseif (!empty($_GET['token'])) {
+    $token = trim($_GET['token']);
+} elseif (!empty($_POST['token'])) {
+    $token = trim($_POST['token']);
+} elseif (!empty($body['token'])) {
+    $token = trim($body['token']);
 } elseif (function_exists('apache_request_headers')) {
-    $headers = apache_request_headers();
-    if (isset($headers['Authorization'])) {
-        $authHeader = $headers['Authorization'];
-    } elseif (isset($headers['authorization'])) {
-        $authHeader = $headers['authorization'];
+    $hdrs = apache_request_headers();
+    $auth = $hdrs['Authorization'] ?? $hdrs['authorization'] ?? $hdrs['X-Auth-Token'] ?? $hdrs['x-auth-token'] ?? '';
+    if (preg_match('/Bearer\s+(.*)$/i', $auth, $m)) {
+        $token = trim($m[1]);
+    } elseif ($auth) {
+        $token = trim($auth);
     }
 }
-if ($authHeader && preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
-    $token = trim($matches[1]);
-}
 
+// 查询当前会话用户
 $currentUser = null;
 if ($token) {
     $stmtUser = $pdo->prepare("SELECT u.* FROM `{$p}sessions` s INNER JOIN `{$p}users` u ON s.user_id = u.id WHERE s.token = ? AND u.status = 'active' LIMIT 1");
@@ -171,9 +178,9 @@ if ($isAdmin) {
     }
 }
 
-// ---------------- 接口路由分发 (全部使用 PDO 参数化绑定防 SQL 注入) ----------------
+// ---------------- 业务接口分发 (全量 PDO 预处理安全查询) ----------------
 
-// 1. 系统设置 (GET /system/settings)
+// 1. 获取全局系统配置 (GET /system/settings)
 if ($route === '/system/settings' && $method === 'GET') {
     $stmt = $pdo->query("SELECT * FROM `{$p}settings` LIMIT 1");
     $s = $stmt->fetch() ?: [];
@@ -197,7 +204,7 @@ if ($route === '/system/settings' && $method === 'GET') {
     exit;
 }
 
-// 2. 当前用户 (GET /auth/me)
+// 2. 当前登录状态检查 (GET /auth/me)
 if ($route === '/auth/me' && $method === 'GET') {
     if ($currentUser) {
         echo json_encode([
@@ -210,7 +217,7 @@ if ($route === '/auth/me' && $method === 'GET') {
     exit;
 }
 
-// 3. 用户登录 (POST /auth/login)
+// 3. 会员登录 (POST /auth/login)
 if ($route === '/auth/login' && $method === 'POST') {
     $username = strtolower(trim($body['username'] ?? ''));
     $password = (string)($body['password'] ?? '');
@@ -227,7 +234,7 @@ if ($route === '/auth/login' && $method === 'POST') {
 
     if ($user['status'] === 'banned') {
         http_response_code(403);
-        echo json_encode(['error' => '该账号已被停用'], JSON_UNESCAPED_UNICODE);
+        echo json_encode(['error' => '此账号已被封禁，请联系客服'], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
@@ -251,7 +258,7 @@ if ($route === '/auth/login' && $method === 'POST') {
     exit;
 }
 
-// 4. 卡密激活注册 (POST /auth/register)
+// 4. 会员注册 (POST /auth/register - 校验并核销卡密)
 if ($route === '/auth/register' && $method === 'POST') {
     $username = trim($body['username'] ?? '');
     $password = (string)($body['password'] ?? '');
@@ -269,6 +276,7 @@ if ($route === '/auth/register' && $method === 'POST') {
         exit;
     }
 
+    // 查验卡密
     $stmtCode = $pdo->prepare("SELECT * FROM `{$p}invite_codes` WHERE code = ? LIMIT 1");
     $stmtCode->execute([$inviteCode]);
     $codeRecord = $stmtCode->fetch();
@@ -284,6 +292,7 @@ if ($route === '/auth/register' && $method === 'POST') {
         exit;
     }
 
+    // 查验用户名重名
     $stmtCheck = $pdo->prepare("SELECT id FROM `{$p}users` WHERE LOWER(username) = ? LIMIT 1");
     $stmtCheck->execute([strtolower($username)]);
     if ($stmtCheck->fetch()) {
@@ -462,7 +471,7 @@ if ($route === '/sites' && $method === 'GET') {
     exit;
 }
 
-// 11. 站点点击直达统计 (POST /sites/click/:id)
+// 11. 站点点击直达统计与鉴权 (POST /sites/click/:id)
 if (strpos($route, '/sites/click/') === 0 && $method === 'POST') {
     $id = substr($route, strlen('/sites/click/'));
     $stmt = $pdo->prepare("SELECT * FROM `{$p}sites` WHERE id = ? LIMIT 1");
@@ -876,7 +885,7 @@ if (strpos($route, '/admin/ads/') === 0) {
     }
 }
 
-// 20. 系统配置管理 (GET, PUT - 包含 logoUrl)
+// 20. 全局系统配置管理 (GET, PUT - 包含 logoUrl)
 if ($route === '/admin/settings') {
     if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
     if ($method === 'GET') {
@@ -926,6 +935,31 @@ if ($route === '/admin/settings') {
         echo json_encode(['success' => true, 'settings' => $body], JSON_UNESCAPED_UNICODE);
         exit;
     }
+}
+
+// 21. 重置初始演示数据 (POST /admin/reset)
+if ($route === '/admin/reset' && $method === 'POST') {
+    if (!$isAdmin) { http_response_code(403); echo json_encode(['error' => '无管理员权限']); exit; }
+    // 重置分类与基础数据
+    $pdo->exec("DELETE FROM `{$p}sites` WHERE 1=1");
+    $pdo->exec("DELETE FROM `{$p}categories` WHERE 1=1");
+    $pdo->exec("DELETE FROM `{$p}ads` WHERE 1=1");
+    $pdo->exec("DELETE FROM `{$p}invite_codes` WHERE 1=1");
+
+    // 重新灌入初始化数据
+    $pdo->exec("INSERT INTO `{$p}categories` (id, name, icon, description, sort_order) VALUES
+        ('cat-ai', 'AI 人工智能', 'Bot', '前沿大语言模型与AI原生生产力工具', 1),
+        ('cat-dev', '开发技术', 'Code2', '代码托管、极客开发框架与云端部署平台', 2),
+        ('cat-design', '设计灵感', 'Palette', 'UI/UX设计资产、3D渲染与创意灵感库', 3),
+        ('cat-tools', '效能工具', 'Wrench', '在线高质压缩、转换与日常实用瑞士军刀', 4),
+        ('cat-media', '独立出海', 'Sparkles', '海外流量开拓、出海SaaS与媒体分发渠道', 5),
+        ('cat-cross', '跨境支付', 'Globe', '国际支付结算、企业跨境合规与外币收单', 6)");
+
+    $pdo->exec("INSERT INTO `{$p}invite_codes` (id, code, vip_days, vip_tier, vip_tier_name, status, remark, created_at) VALUES
+        ('code-1', 'VIP888-2026', 30, 'vip', 'VIP 月度会员', 'unused', '初始激活卡密', NOW())");
+
+    echo json_encode(['success' => true, 'message' => '数据表已完成重新初始化'], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
 http_response_code(404);
