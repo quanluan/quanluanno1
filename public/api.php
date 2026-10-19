@@ -119,6 +119,10 @@ if (!$hasMySql) {
 $token = '';
 if (!empty($_SERVER['HTTP_AUTHORIZATION']) && preg_match('/Bearer\s+(.*)$/i', $_SERVER['HTTP_AUTHORIZATION'], $m)) {
     $token = trim($m[1]);
+} elseif (!empty($_COOKIE['aurora_nav_token'])) {
+    $token = trim($_COOKIE['aurora_nav_token']);
+} elseif (!empty($_COOKIE['token'])) {
+    $token = trim($_COOKIE['token']);
 } elseif (!empty($_SERVER['HTTP_X_AUTH_TOKEN'])) {
     $token = trim($_SERVER['HTTP_X_AUTH_TOKEN']);
 } elseif (!empty($_GET['token'])) {

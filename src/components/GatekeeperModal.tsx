@@ -75,13 +75,22 @@ export const GatekeeperModal: React.FC<GatekeeperModalProps> = ({
       });
       setStoredToken(res.token);
       setSuccessMsg(res.message || '注册成功，正在跳转...');
-      setTimeout(() => {
+      setTimeout(async () => {
         onLoginSuccess(res.user);
         onClose();
-        if (targetSite && targetSite.url) {
-          window.open(targetSite.url, '_blank', 'noopener,noreferrer');
+        if (targetSite) {
+          try {
+            const clickRes = await api.clickSite(targetSite.id);
+            if (clickRes?.url) {
+              const jump = clickRes.url.startsWith('http') ? clickRes.url : `https://${clickRes.url}`;
+              window.location.href = jump;
+              return;
+            }
+          } catch {
+            // fallback
+          }
         }
-      }, 1200);
+      }, 600);
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : '注册失败，请检查输入');
     } finally {
@@ -107,13 +116,22 @@ export const GatekeeperModal: React.FC<GatekeeperModalProps> = ({
       });
       setStoredToken(res.token);
       setSuccessMsg('登录成功，正在进入...');
-      setTimeout(() => {
+      setTimeout(async () => {
         onLoginSuccess(res.user);
         onClose();
-        if (targetSite && targetSite.url) {
-          window.open(targetSite.url, '_blank', 'noopener,noreferrer');
+        if (targetSite) {
+          try {
+            const clickRes = await api.clickSite(targetSite.id);
+            if (clickRes?.url) {
+              const jump = clickRes.url.startsWith('http') ? clickRes.url : `https://${clickRes.url}`;
+              window.location.href = jump;
+              return;
+            }
+          } catch {
+            // fallback
+          }
         }
-      }, 800);
+      }, 600);
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : '登录失败，请核对信息');
     } finally {

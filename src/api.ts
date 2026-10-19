@@ -3,14 +3,25 @@ import { SystemSettings, User, Category, SiteItem, AdItem, InviteCode, AdminStat
 const TOKEN_KEY = 'aurora_nav_token';
 
 export function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  if (typeof window === 'undefined') return null;
+  const lsToken = localStorage.getItem(TOKEN_KEY);
+  if (lsToken) return lsToken;
+  const match = document.cookie.match(new RegExp('(^|;\\s*)' + TOKEN_KEY + '=([^;]*)'));
+  return match ? decodeURIComponent(match[2]) : null;
 }
 
 export function setStoredToken(token: string | null) {
+  if (typeof window === 'undefined') return;
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
+    try {
+      document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=2592000; SameSite=Lax`;
+    } catch {}
   } else {
     localStorage.removeItem(TOKEN_KEY);
+    try {
+      document.cookie = `${TOKEN_KEY}=; path=/; max-age=0; SameSite=Lax`;
+    } catch {}
   }
 }
 

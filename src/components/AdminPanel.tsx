@@ -1083,37 +1083,69 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <span>新建赞助广告</span>
               </button>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* 赞助广告展位管理：宽度与修改前展位宽度一致 (3列网格)，每条高度设为五分之一 (高度紧凑水平条状，支持GIF动图) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {ads.map((ad) => (
                   <div
                     key={ad.id}
-                    className="p-4 bg-white rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between"
+                    className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-xs flex items-center justify-between gap-2.5 hover:border-slate-300 transition-colors min-h-[54px]"
                   >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded">
-                          {ad.position === 'top_banner' ? '顶部大图Banner' : '精选合作卡片'}
+                    {/* 左侧：广告图片 / GIF 动态图微缩预览 (支持 GIF 动图展示) */}
+                    <div className="w-14 h-10 rounded-md overflow-hidden bg-slate-100 border border-slate-200 relative shrink-0 flex items-center justify-center">
+                      {ad.imageUrl ? (
+                        <>
+                          <img
+                            src={ad.imageUrl}
+                            alt={ad.title}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                          {ad.imageUrl.toLowerCase().includes('.gif') && (
+                            <span className="absolute bottom-0.5 right-0.5 text-[8px] font-bold text-white bg-black/75 px-1 py-0.2 rounded leading-none backdrop-blur-xs">
+                              GIF
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 font-medium">无图</span>
+                      )}
+                    </div>
+
+                    {/* 中间：标题、展位类型、状态、链接 */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <h4 className="font-bold text-xs text-slate-900 truncate" title={ad.title}>
+                          {ad.title}
+                        </h4>
+                        <span className="text-[9px] font-semibold text-amber-800 bg-amber-50 px-1 py-0.2 rounded shrink-0">
+                          {ad.position === 'top_banner' ? '顶部Banner' : '精选展位'}
                         </span>
-                        <span className={`text-[10px] ${ad.isActive ? 'text-emerald-600' : 'text-slate-400'}`}>
-                          {ad.isActive ? '展示中' : '已暂停'}
+                        <span className={`text-[9px] shrink-0 ${ad.isActive ? 'text-emerald-600' : 'text-slate-400'}`}>
+                          {ad.isActive ? '展示中' : '暂停'}
                         </span>
                       </div>
-                      <h4 className="font-bold text-sm text-slate-900 line-clamp-1 mb-1">{ad.title}</h4>
-                      <p className="text-xs text-slate-500 line-clamp-2 mb-2">{ad.description}</p>
-                      <a
-                        href={ad.targetUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[11px] text-indigo-600 hover:underline truncate block"
-                      >
-                        {ad.targetUrl}
-                      </a>
+                      <div className="flex items-center gap-2">
+                        <a
+                          href={ad.targetUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] text-indigo-600 hover:underline truncate block max-w-[170px]"
+                          title={ad.targetUrl}
+                        >
+                          {ad.targetUrl}
+                        </a>
+                      </div>
                     </div>
-                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                      <span className="text-[11px] font-mono tabular-nums text-slate-400">
-                        {ad.clickCount} 次点击
+
+                    {/* 右侧：点击量统计与编辑/删除操作按钮 */}
+                    <div className="flex items-center gap-1.5 shrink-0 pl-1 border-l border-slate-100">
+                      <span className="text-[10px] font-mono tabular-nums text-slate-400 hidden sm:inline" title="累计点击量">
+                        {ad.clickCount}次
                       </span>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-0.5">
                         <button
                           onClick={() => {
                             setEditingAd(ad);
@@ -1130,12 +1162,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             setShowAdModal(true);
                           }}
                           className="p-1 text-slate-500 hover:text-indigo-600 rounded hover:bg-slate-100 cursor-pointer"
+                          title="编辑广告"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => handleDeleteAd(ad.id)}
                           className="p-1 text-slate-400 hover:text-red-600 rounded hover:bg-red-50 cursor-pointer"
+                          title="删除广告"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -1718,14 +1752,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
 
               <div>
-                <label className="block font-medium text-slate-700 mb-1">大图 URL (仅顶部大图需要)</label>
+                <label className="block font-medium text-slate-700 mb-1">
+                  广告图片 / GIF 动态图 URL (支持静态海报或 GIF 动图)
+                </label>
                 <input
                   type="text"
                   value={adForm.imageUrl}
                   onChange={(e) => setAdForm({ ...adForm, imageUrl: e.target.value })}
-                  placeholder="https://... 或图片链接"
+                  placeholder="https://... 或 GIF 动态图链接"
                   className="w-full px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                 />
+                {adForm.imageUrl && (
+                  <div className="mt-2 p-2 bg-slate-50 rounded-lg border border-slate-200">
+                    <div className="text-[11px] text-slate-500 mb-1 flex items-center justify-between">
+                      <span>海报 / 动图预览:</span>
+                      {adForm.imageUrl.toLowerCase().includes('.gif') && (
+                        <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded">
+                          GIF 动态图
+                        </span>
+                      )}
+                    </div>
+                    <div className="aspect-[16/9] max-h-28 rounded overflow-hidden bg-slate-100 flex items-center justify-center">
+                      <img
+                        src={adForm.imageUrl}
+                        alt="GIF 动图预览"
+                        referrerPolicy="no-referrer"
+                        className="max-h-full max-w-full object-contain"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>

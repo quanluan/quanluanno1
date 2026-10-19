@@ -46,18 +46,6 @@ export default function App() {
   // Initial load
   const loadInitialData = async () => {
     try {
-      const [sets, cats, sts, adList] = await Promise.all([
-        api.getSettings(),
-        api.getCategories(),
-        api.getSites(),
-        api.getAds(),
-      ]);
-      setSettings(sets);
-      setCategories(cats);
-      setSites(sts);
-      setAds(adList);
-
-      // Check current user session
       try {
         const me = await api.getMe();
         if (me.authenticated && me.user) {
@@ -68,6 +56,17 @@ export default function App() {
       } catch {
         setCurrentUser(null);
       }
+
+      const [sets, cats, sts, adList] = await Promise.all([
+        api.getSettings(),
+        api.getCategories(),
+        api.getSites(),
+        api.getAds(),
+      ]);
+      setSettings(sets);
+      setCategories(cats);
+      setSites(sts);
+      setAds(adList);
     } catch (e) {
       console.error('Failed to load initial data:', e);
     } finally {
