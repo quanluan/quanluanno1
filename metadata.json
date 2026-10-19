@@ -1,0 +1,6 @@
+{
+  "name": "极光VIP专属导航与精选资源目录",
+  "description": "面向生产环境的高品质精选资源导航与VIP会员服务平台，支持自定义Logo、精选赞助广告展位、专属卡密会员机制及全功能后台管理。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
